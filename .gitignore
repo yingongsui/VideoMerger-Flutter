@@ -46,3 +46,5 @@ app.*.map.json
 
 # Android signing (key.properties, local.properties, *.jks, *.keystore are in android/.gitignore)
 /android/app/yq
+
+.vscode/
