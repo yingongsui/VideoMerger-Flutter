@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'merge_page.dart';
+import 'progress_style.dart';
 
 void main() => runApp(const VideoMergerApp());
 
@@ -16,14 +17,16 @@ class _VideoMergerAppState extends State<VideoMergerApp> {
   static const String _legacyDarkModeKey = 'is_dark_mode';
 
   ThemeMode _themeMode = ThemeMode.system;
+  ProgressBarStyle _progressStyle = ProgressBarStyle.cardSweep;
+  ProgressColorPreset _progressColor = ProgressColorPreset.dodgerBlue;
 
   @override
   void initState() {
     super.initState();
-    _loadThemePreference();
+    _loadPreferences();
   }
 
-  Future<void> _loadThemePreference() async {
+  Future<void> _loadPreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final savedMode = prefs.getString(_prefThemeModeKey);
@@ -40,8 +43,14 @@ class _VideoMergerAppState extends State<VideoMergerApp> {
             : ThemeMode.dark;
       }
 
-      if (resolved != null && mounted) {
-        setState(() => _themeMode = resolved!);
+      final savedStyle = await ProgressStylePrefs.loadStyle();
+      final savedColor = await ProgressStylePrefs.loadColor();
+      if (mounted) {
+        setState(() {
+          if (resolved != null) _themeMode = resolved;
+          _progressStyle = savedStyle;
+          _progressColor = savedColor;
+        });
       }
     } catch (_) {}
   }
@@ -54,11 +63,21 @@ class _VideoMergerAppState extends State<VideoMergerApp> {
     } catch (_) {}
   }
 
+  Future<void> _setProgressStyle(ProgressBarStyle style) async {
+    setState(() => _progressStyle = style);
+    await ProgressStylePrefs.saveStyle(style);
+  }
+
+  Future<void> _setProgressColor(ProgressColorPreset preset) async {
+    setState(() => _progressColor = preset);
+    await ProgressStylePrefs.saveColor(preset);
+  }
+
   ThemeData _buildTheme(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
     final colorScheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF2196F3),
-      secondary: const Color(0xFF00BCD4),
+      seedColor: ProgressColorPreset.dodgerBlue.primary,
+      secondary: ProgressColorPreset.dodgerBlue.light,
       brightness: brightness,
     );
 
@@ -100,6 +119,10 @@ class _VideoMergerAppState extends State<VideoMergerApp> {
       home: MergePage(
         themeMode: _themeMode,
         onThemeModeChanged: _setThemeMode,
+        progressStyle: _progressStyle,
+        onProgressStyleChanged: _setProgressStyle,
+        progressColor: _progressColor,
+        onProgressColorChanged: _setProgressColor,
       ),
     );
   }

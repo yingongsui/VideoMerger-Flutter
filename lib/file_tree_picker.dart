@@ -32,15 +32,26 @@ class MultiFileTreePicker extends StatefulWidget {
 }
 
 class _MultiFileTreePickerState extends State<MultiFileTreePicker> {
-  static const String _prefLastPathKey = 'last_accessed_path';
+  static const String _prefSourceLastPathKey = 'last_source_video_path';
+  static const String _prefTargetLastPathKey = 'last_target_folder_path';
+  static const String _prefSourceRecentKey = 'recent_source_video_folders';
+  static const String _prefTargetRecentKey = 'recent_target_folders';
+  static const int _maxRecentFolders = 3;
   static const String _internalRoot = '/storage/emulated/0';
 
   Directory? _currentDir;
   final List<_StorageVolume> _storageVolumes = [];
   List<FileSystemEntity> _entities = [];
+  List<String> _recentFolders = [];
   final Set<String> _selectedPaths = {};
   final Map<String, Future<String?>> _thumbnailFutures = {};
   bool _isLoading = true;
+
+  String get _lastPathKey =>
+      widget.pickFolderMode ? _prefTargetLastPathKey : _prefSourceLastPathKey;
+
+  String get _recentFoldersKey =>
+      widget.pickFolderMode ? _prefTargetRecentKey : _prefSourceRecentKey;
 
   @override
   void initState() {
@@ -52,11 +63,35 @@ class _MultiFileTreePickerState extends State<MultiFileTreePicker> {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (path == null) {
-        await prefs.remove(_prefLastPathKey);
+        await prefs.remove(_lastPathKey);
       } else {
-        await prefs.setString(_prefLastPathKey, path);
+        await prefs.setString(_lastPathKey, path);
       }
     } catch (_) {}
+  }
+
+  Future<void> _recordRecentFolder(String folderPath) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final existing = prefs.getStringList(_recentFoldersKey) ?? const [];
+      final updated = <String>[
+        folderPath,
+        ...existing.where((p) => p != folderPath),
+      ].take(_maxRecentFolders).toList();
+      await prefs.setStringList(_recentFoldersKey, updated);
+      if (mounted) {
+        setState(() => _recentFolders = updated);
+      }
+    } catch (_) {}
+  }
+
+  String _shortFolderLabel(String path) {
+    if (path == _internalRoot) return 'Internal';
+    for (final vol in _storageVolumes) {
+      if (vol.path == path) return vol.name;
+    }
+    final name = path.split('/').where((s) => s.isNotEmpty).lastOrNull;
+    return name ?? path;
   }
 
   Future<void> _detectStorageVolumesAndRestore() async {
@@ -101,10 +136,22 @@ class _MultiFileTreePickerState extends State<MultiFileTreePicker> {
     }
 
     String? savedPath;
+    final validRecents = <String>[];
     try {
       final prefs = await SharedPreferences.getInstance();
-      savedPath = prefs.getString(_prefLastPathKey);
+      savedPath = prefs.getString(_lastPathKey);
+      final rawRecents = prefs.getStringList(_recentFoldersKey) ?? const [];
+      for (final p in rawRecents) {
+        if (await Directory(p).exists() && !validRecents.contains(p)) {
+          validRecents.add(p);
+          if (validRecents.length >= _maxRecentFolders) break;
+        }
+      }
     } catch (_) {}
+
+    if (mounted) {
+      setState(() => _recentFolders = validRecents);
+    }
 
     if (savedPath != null) {
       final savedDir = Directory(savedPath);
@@ -283,7 +330,13 @@ class _MultiFileTreePickerState extends State<MultiFileTreePicker> {
                 child: FilledButton.icon(
                   icon: const Icon(Icons.check_rounded, size: 18),
                   label: const Text('Use Here'),
-                  onPressed: () => Navigator.pop(context, [_currentDir!.path]),
+                  onPressed: () async {
+                    final chosen = _currentDir!.path;
+                    await _recordRecentFolder(chosen);
+                    if (context.mounted) {
+                      Navigator.pop(context, [chosen]);
+                    }
+                  },
                 ),
               )
             else if (!widget.pickFolderMode && _selectedPaths.isNotEmpty)
@@ -292,8 +345,15 @@ class _MultiFileTreePickerState extends State<MultiFileTreePicker> {
                 child: FilledButton.icon(
                   icon: const Icon(Icons.check_rounded, size: 18),
                   label: Text('Add (${_selectedPaths.length})'),
-                  onPressed: () =>
-                      Navigator.pop(context, _selectedPaths.toList()),
+                  onPressed: () async {
+                    final result = _selectedPaths.toList();
+                    if (_currentDir != null) {
+                      await _recordRecentFolder(_currentDir!.path);
+                    }
+                    if (context.mounted) {
+                      Navigator.pop(context, result);
+                    }
+                  },
                 ),
               ),
           ],
@@ -356,6 +416,65 @@ class _MultiFileTreePickerState extends State<MultiFileTreePicker> {
                         ),
                       ),
                   ],
+                ),
+              ),
+            if (_recentFolders.isNotEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  border: Border(
+                    bottom: BorderSide(
+                      color: colorScheme.outlineVariant.withValues(alpha: 0.35),
+                    ),
+                  ),
+                ),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.history_rounded,
+                        size: 16,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 6),
+                      for (final folderPath in _recentFolders)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: Tooltip(
+                            message: folderPath,
+                            child: ActionChip(
+                              avatar: Icon(
+                                Icons.folder_rounded,
+                                size: 15,
+                                color: _currentDir?.path == folderPath
+                                    ? colorScheme.onPrimaryContainer
+                                    : colorScheme.primary,
+                              ),
+                              label: Text(
+                                _shortFolderLabel(folderPath),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: _currentDir?.path == folderPath
+                                      ? FontWeight.w600
+                                      : FontWeight.normal,
+                                ),
+                              ),
+                              backgroundColor: _currentDir?.path == folderPath
+                                  ? colorScheme.primaryContainer
+                                  : null,
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () =>
+                                  _openDirectory(Directory(folderPath)),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             Expanded(

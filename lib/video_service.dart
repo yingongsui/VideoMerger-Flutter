@@ -6,10 +6,12 @@ import 'package:ffmpeg_kit_flutter_new_min/ffmpeg_kit_config.dart';
 import 'package:ffmpeg_kit_flutter_new_min/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class VideoMetadata {
   final String resolution;
   final String fps;
+  final double fpsValue;
   final String bitrate;
   final int totalFrames;
   final String duration;
@@ -17,11 +19,17 @@ class VideoMetadata {
   final String size;
   final int sizeBytes;
   final String videoCodec;
+  final String videoProfile;
+  final String pixelFormat;
+  final String videoTimeBase;
   final String audioCodec;
+  final String audioSampleRate;
+  final String audioChannelLayout;
 
   const VideoMetadata({
     this.resolution = 'Unknown',
     this.fps = 'Unknown',
+    this.fpsValue = 0.0,
     this.bitrate = 'Unknown',
     this.totalFrames = 0,
     this.duration = 'Unknown',
@@ -29,7 +37,12 @@ class VideoMetadata {
     this.size = 'Unknown',
     this.sizeBytes = 0,
     this.videoCodec = 'Unknown',
+    this.videoProfile = 'Unknown',
+    this.pixelFormat = 'Unknown',
+    this.videoTimeBase = 'Unknown',
     this.audioCodec = 'No Audio',
+    this.audioSampleRate = 'Unknown',
+    this.audioChannelLayout = 'Unknown',
   });
 }
 
@@ -44,6 +57,8 @@ class StreamCompatibilityResult {
 }
 
 class VideoService {
+  static const String _prefCustomExtKey = 'custom_video_extensions';
+
   static const List<String> supportedExtensions = [
     '.mp4',
     '.mkv',
@@ -52,6 +67,48 @@ class VideoService {
     '.ts',
     '.webm',
   ];
+
+  /// Normalizes a raw extension input (e.g. "m4v", ".FLV") into ".m4v" / ".flv".
+  /// Returns null if the input is empty or contains invalid characters.
+  static String? normalizeExtension(String raw) {
+    final cleaned = raw.trim().toLowerCase().replaceFirst(RegExp(r'^\.+'), '');
+    if (cleaned.isEmpty) return null;
+    if (!RegExp(r'^[a-z0-9_-]+$').hasMatch(cleaned)) return null;
+    return '.$cleaned';
+  }
+
+  static Future<List<String>> loadCustomExtensions() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getStringList(_prefCustomExtKey) ?? const [];
+      return saved
+          .map(normalizeExtension)
+          .whereType<String>()
+          .where((ext) => !supportedExtensions.contains(ext))
+          .toSet()
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> saveCustomExtensions(List<String> extensions) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final normalized = extensions
+          .map(normalizeExtension)
+          .whereType<String>()
+          .where((ext) => !supportedExtensions.contains(ext))
+          .toSet()
+          .toList();
+      await prefs.setStringList(_prefCustomExtKey, normalized);
+    } catch (_) {}
+  }
+
+  static Future<List<String>> getAllSupportedExtensions() async {
+    final custom = await loadCustomExtensions();
+    return [...supportedExtensions, ...custom];
+  }
 
   static Future<bool> requestStoragePermission() async {
     var status = await Permission.manageExternalStorage.status;
@@ -96,31 +153,44 @@ class VideoService {
     final warnings = <String>[];
     final first = loaded.first;
 
-    final hasDiffVideoCodec = loaded.any(
-      (m) =>
-          m.videoCodec != 'Unknown' &&
-          first.videoCodec != 'Unknown' &&
-          m.videoCodec != first.videoCodec,
-    );
-    if (hasDiffVideoCodec) {
+    bool differs(String Function(VideoMetadata m) selector) {
+      final base = selector(first);
+      if (base == 'Unknown' || base.isEmpty) return false;
+      return loaded.any((m) {
+        final v = selector(m);
+        return v != 'Unknown' && v.isNotEmpty && v != base;
+      });
+    }
+
+    if (differs((m) => m.videoCodec)) {
       warnings.add('Video codec mismatch');
     }
-
-    final hasDiffResolution = loaded.any(
-      (m) =>
-          m.resolution != 'Unknown' &&
-          first.resolution != 'Unknown' &&
-          m.resolution != first.resolution,
-    );
-    if (hasDiffResolution) {
+    if (differs((m) => m.resolution)) {
       warnings.add('Resolution mismatch');
     }
-
-    final hasDiffAudioCodec = loaded.any(
-      (m) => m.audioCodec != first.audioCodec,
-    );
-    if (hasDiffAudioCodec) {
+    if (differs((m) => m.videoTimeBase)) {
+      warnings.add('Timebase mismatch (timeline risk)');
+    }
+    if (first.fpsValue > 0 &&
+        loaded.any(
+          (m) => m.fpsValue > 0 && (m.fpsValue - first.fpsValue).abs() > 0.5,
+        )) {
+      warnings.add('FPS mismatch');
+    }
+    if (differs((m) => m.pixelFormat)) {
+      warnings.add('Pixel format / bit-depth mismatch');
+    }
+    if (differs((m) => m.videoProfile)) {
+      warnings.add('Video profile mismatch');
+    }
+    if (loaded.any((m) => m.audioCodec != first.audioCodec)) {
       warnings.add('Audio codec mismatch');
+    }
+    if (differs((m) => m.audioSampleRate)) {
+      warnings.add('Audio sample rate mismatch');
+    }
+    if (differs((m) => m.audioChannelLayout)) {
+      warnings.add('Audio channel layout mismatch');
     }
 
     return StreamCompatibilityResult(
@@ -247,7 +317,12 @@ class VideoService {
         double fpsValue = 0.0;
         String fpsStr = 'Unknown';
         String vCodec = 'Unknown';
+        String vProfile = 'Unknown';
+        String pixFmt = 'Unknown';
+        String vTimeBase = 'Unknown';
         String aCodec = 'No Audio';
+        String aSampleRate = 'Unknown';
+        String aChannelLayout = 'Unknown';
         bool foundVideo = false;
         bool foundAudio = false;
 
@@ -269,6 +344,19 @@ class VideoService {
               vCodec = codec.toUpperCase();
             }
 
+            final rawProfile = stream.getStringProperty('profile');
+            if (rawProfile != null && rawProfile.isNotEmpty) {
+              vProfile = rawProfile;
+            }
+            final rawPixFmt = stream.getFormat();
+            if (rawPixFmt != null && rawPixFmt.isNotEmpty) {
+              pixFmt = rawPixFmt;
+            }
+            final rawTimeBase = stream.getTimeBase();
+            if (rawTimeBase != null && rawTimeBase.isNotEmpty) {
+              vTimeBase = rawTimeBase;
+            }
+
             // Prefer average frame rate to avoid bogus timebase values on VFR clips
             fpsValue = _parseRational(stream.getAverageFrameRate());
             if (fpsValue <= 0) {
@@ -283,6 +371,14 @@ class VideoService {
             if (codec != null && codec.isNotEmpty) {
               aCodec = codec.toUpperCase();
             }
+            final sr = stream.getSampleRate();
+            if (sr != null && sr.isNotEmpty) {
+              aSampleRate = '$sr Hz';
+            }
+            final chLayout = stream.getChannelLayout();
+            if (chLayout != null && chLayout.isNotEmpty) {
+              aChannelLayout = chLayout;
+            }
           }
         }
 
@@ -292,6 +388,7 @@ class VideoService {
         return VideoMetadata(
           resolution: resolution,
           fps: fpsStr,
+          fpsValue: fpsValue,
           bitrate: bitrate,
           totalFrames: totalFrames,
           duration: durationStr,
@@ -299,7 +396,12 @@ class VideoService {
           size: sizeStr,
           sizeBytes: sizeBytes,
           videoCodec: vCodec,
+          videoProfile: vProfile,
+          pixelFormat: pixFmt,
+          videoTimeBase: vTimeBase,
           audioCodec: aCodec,
+          audioSampleRate: aSampleRate,
+          audioChannelLayout: aChannelLayout,
         );
       }
     } catch (e) {

@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'file_tree_picker.dart';
+import 'floating_toast.dart';
+import 'progress_style.dart';
 import 'settings_page.dart';
 import 'video_service.dart';
 
@@ -21,11 +23,19 @@ class VideoItem {
 class MergePage extends StatefulWidget {
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode> onThemeModeChanged;
+  final ProgressBarStyle progressStyle;
+  final ValueChanged<ProgressBarStyle> onProgressStyleChanged;
+  final ProgressColorPreset progressColor;
+  final ValueChanged<ProgressColorPreset> onProgressColorChanged;
 
   const MergePage({
     super.key,
     required this.themeMode,
     required this.onThemeModeChanged,
+    required this.progressStyle,
+    required this.onProgressStyleChanged,
+    required this.progressColor,
+    required this.onProgressColorChanged,
   });
 
   @override
@@ -43,6 +53,7 @@ class _MergePageState extends State<MergePage> {
   Timer? _timer;
   int _mergeSeconds = 0;
   int _currentGlobalFrame = 0;
+  int _totalMergeFrames = 0;
 
   String _currentCommand = '';
   final List<String> _consoleLogs = [];
@@ -86,16 +97,17 @@ class _MergePageState extends State<MergePage> {
   Future<void> _addFiles() async {
     final hasPermission = await VideoService.requestStoragePermission();
     if (!hasPermission) {
-      _showSnackBar('Storage permission is required to browse video files.');
+      _showToast('Storage permission is required to browse video files.');
       return;
     }
+    final allowedExtensions = await VideoService.getAllSupportedExtensions();
     if (!mounted) return;
 
     final selectedPaths = await Navigator.push<List<String>>(
       context,
       PageRouteBuilder(
-        pageBuilder: (_, _, _) => const MultiFileTreePicker(
-          allowedExtensions: VideoService.supportedExtensions,
+        pageBuilder: (_, _, _) => MultiFileTreePicker(
+          allowedExtensions: allowedExtensions,
           pickFolderMode: false,
         ),
         transitionDuration: Duration.zero,
@@ -133,7 +145,7 @@ class _MergePageState extends State<MergePage> {
   Future<void> _selectTargetFolder() async {
     final hasPermission = await VideoService.requestStoragePermission();
     if (!hasPermission) {
-      _showSnackBar('Storage permission is required to choose a folder.');
+      _showToast('Storage permission is required to choose a folder.');
       return;
     }
     if (!mounted) return;
@@ -217,7 +229,7 @@ class _MergePageState extends State<MergePage> {
       _appendLog('[USER ACTION] Concat pipeline manually terminated.');
     });
     _scrollToBottom();
-    _showSnackBar('Merge force-stopped.');
+    _showToast('Merge force-stopped.');
   }
 
   void _startTimer() {
@@ -259,12 +271,12 @@ class _MergePageState extends State<MergePage> {
     ].join('\n');
     if (text.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
-    _showSnackBar('Console logs copied to clipboard.');
+    _showToast('Console logs copied to clipboard.');
   }
 
   Future<void> _startMerge() async {
     if (_videoItems.isEmpty) {
-      _showSnackBar('Add at least one video file first.');
+      _showToast('Add at least one video file first.');
       return;
     }
 
@@ -288,6 +300,7 @@ class _MergePageState extends State<MergePage> {
       _isMerging = true;
       _isConsoleExpanded = true;
       _currentGlobalFrame = 0;
+      _totalMergeFrames = totalFrames;
       _currentCommand =
           'ffmpeg -y -f concat -safe 0 -i merge_list.txt -c copy "$computedOutPath"';
     });
@@ -323,29 +336,116 @@ class _MergePageState extends State<MergePage> {
     });
 
     if (outputPath != null) {
-      _showSnackBar('Merged in ${_mergeSeconds}s!\nSaved to: $outputPath');
+      final fileName = outputPath.split('/').last;
+      _showToast(
+        'Merged in ${_mergeSeconds}s • $fileName',
+        type: ToastType.success,
+      );
     } else {
       if (_consoleLogs.isNotEmpty &&
           _consoleLogs.last.contains('[USER ACTION]')) {
         return;
       }
-      _showSnackBar(
-        'Merge failed. Check stream compatibility or console logs.',
+      _showToast(
+        'Merge failed. Check stream compatibility or logs.',
+        type: ToastType.error,
       );
     }
   }
 
-  void _showSnackBar(String message) {
+  void _showToast(String message, {ToastType type = ToastType.info}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(message),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 4),
+    FloatingToast.show(context, message, type: type);
+  }
+
+  void _showCompatibilityDialog(StreamCompatibilityResult compatibility) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(
+              compatibility.isCompatible
+                  ? Icons.verified_rounded
+                  : Icons.warning_amber_rounded,
+              color: compatibility.isCompatible ? Colors.green : Colors.amber,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              compatibility.isCompatible
+                  ? 'Streams Aligned'
+                  : 'Compatibility Warning',
+            ),
+          ],
         ),
-      );
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (compatibility.isCompatible)
+                const Text(
+                  'All clips share matching codec, resolution, timebase, FPS, pixel format, and audio parameters for safe lossless (-c copy) merging.',
+                  style: TextStyle(fontSize: 13),
+                )
+              else ...[
+                const Text(
+                  'Detected differences that may cause broken timelines, audio desync, or playback glitches with -c copy:',
+                  style: TextStyle(fontSize: 12.5),
+                ),
+                const SizedBox(height: 8),
+                for (final w in compatibility.warnings)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      '• $w',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+              ],
+              const SizedBox(height: 12),
+              const Divider(height: 1),
+              const SizedBox(height: 10),
+              for (int i = 0; i < _videoItems.length; i++) ...[
+                Text(
+                  '#${i + 1} ${_videoItems[i].name}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (_videoItems[i].metadata != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2, bottom: 8),
+                    child: Text(
+                      '${_videoItems[i].metadata!.videoCodec} (${_videoItems[i].metadata!.videoProfile}) • '
+                      '${_videoItems[i].metadata!.resolution} • ${_videoItems[i].metadata!.fps}\n'
+                      'PixFmt: ${_videoItems[i].metadata!.pixelFormat} • TB: ${_videoItems[i].metadata!.videoTimeBase}\n'
+                      'Audio: ${_videoItems[i].metadata!.audioCodec} (${_videoItems[i].metadata!.audioSampleRate}, ${_videoItems[i].metadata!.audioChannelLayout})',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   bool get _isDark => Theme.of(context).brightness == Brightness.dark;
@@ -357,6 +457,10 @@ class _MergePageState extends State<MergePage> {
         builder: (_) => SettingsPage(
           currentThemeMode: widget.themeMode,
           onThemeModeChanged: widget.onThemeModeChanged,
+          currentProgressStyle: widget.progressStyle,
+          onProgressStyleChanged: widget.onProgressStyleChanged,
+          currentProgressColor: widget.progressColor,
+          onProgressColorChanged: widget.onProgressColorChanged,
         ),
       ),
     );
@@ -432,7 +536,7 @@ class _MergePageState extends State<MergePage> {
                 : _buildVideoList(colorScheme),
           ),
           if (_videoItems.isNotEmpty) _buildConsolePanel(colorScheme),
-          if (_isMerging) _buildActiveProgressBanner(colorScheme),
+          if (_isMerging || _hasMerged) _buildActiveProgressBanner(),
           _buildBottomActionBar(colorScheme),
         ],
       ),
@@ -590,10 +694,9 @@ class _MergePageState extends State<MergePage> {
             ),
           ),
           if (_videoItems.length >= 2)
-            Tooltip(
-              message: compatibility.isCompatible
-                  ? 'All streams match for lossless pass-through copy'
-                  : compatibility.warnings.join(', '),
+            InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () => _showCompatibilityDialog(compatibility),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
@@ -623,7 +726,9 @@ class _MergePageState extends State<MergePage> {
                     Text(
                       compatibility.isCompatible
                           ? 'Stream Aligned'
-                          : compatibility.warnings.first,
+                          : compatibility.warnings.length > 1
+                              ? '${compatibility.warnings.length} Mismatches'
+                              : compatibility.warnings.first,
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
@@ -715,36 +820,19 @@ class _MergePageState extends State<MergePage> {
             borderRadius: BorderRadius.circular(14),
             side: BorderSide(
               color: isActiveSlot
-                  ? colorScheme.primary
+                  ? widget.progressColor.primary
                   : colorScheme.outlineVariant.withValues(
                       alpha: _isDark ? 0.35 : 0.6,
                     ),
               width: isActiveSlot ? 1.8 : 1.0,
             ),
           ),
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: (_isMerging || _hasMerged) && localProgress > 0.0
-                  ? LinearGradient(
-                      colors: [
-                        colorScheme.primary.withValues(
-                          alpha: _isDark ? 0.24 : 0.16,
-                        ),
-                        colorScheme.secondary.withValues(
-                          alpha: _isDark ? 0.14 : 0.08,
-                        ),
-                        Colors.transparent,
-                      ],
-                      stops: [
-                        (localProgress - 0.03).clamp(0.0, 1.0),
-                        localProgress.clamp(0.0, 1.0),
-                        localProgress.clamp(0.0, 1.0),
-                      ],
-                      begin: Alignment.centerLeft,
-                      end: Alignment.centerRight,
-                    )
-                  : null,
-            ),
+          child: AnimatedCardProgressOverlay(
+            progress: localProgress,
+            showProgress: _isMerging || _hasMerged,
+            style: widget.progressStyle,
+            colorPreset: widget.progressColor,
+            isDark: _isDark,
             child: ListTile(
               contentPadding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
               leading: _buildThumbnailWithIndex(item, i, colorScheme),
@@ -805,7 +893,18 @@ class _MergePageState extends State<MergePage> {
                         ),
                         const SizedBox(height: 5),
                         Text(
-                          '${item.metadata!.videoCodec} • ${item.metadata!.audioCodec}  |  ${item.metadata!.bitrate}  |  ${item.metadata!.totalFrames}f',
+                          _formatVideoStreamLine(item.metadata!),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            fontFamily: 'monospace',
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _formatAudioAndBitrateLine(item.metadata!),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -825,8 +924,10 @@ class _MergePageState extends State<MergePage> {
                           fontWeight: FontWeight.bold,
                           fontSize: 14,
                           color: isActiveSlot
-                              ? Colors.orange
-                              : colorScheme.primary,
+                              ? (_isDark
+                                  ? widget.progressColor.light
+                                  : widget.progressColor.primary)
+                              : widget.progressColor.deep,
                         ),
                       ),
                     )
@@ -861,6 +962,39 @@ class _MergePageState extends State<MergePage> {
         );
       },
     );
+  }
+
+  String _formatVideoStreamLine(VideoMetadata meta) {
+    final parts = <String>[];
+    if (meta.videoCodec != 'Unknown') {
+      final profile =
+          meta.videoProfile != 'Unknown' ? ' (${meta.videoProfile})' : '';
+      parts.add('${meta.videoCodec}$profile');
+    }
+    if (meta.pixelFormat != 'Unknown') {
+      parts.add(meta.pixelFormat);
+    }
+    if (meta.videoTimeBase != 'Unknown') {
+      parts.add('TB ${meta.videoTimeBase}');
+    }
+    return parts.isEmpty ? 'Video: Unknown' : parts.join(' • ');
+  }
+
+  String _formatAudioAndBitrateLine(VideoMetadata meta) {
+    final audioExtras = <String>[
+      if (meta.audioSampleRate != 'Unknown') meta.audioSampleRate,
+      if (meta.audioChannelLayout != 'Unknown') meta.audioChannelLayout,
+    ];
+    final audioText = audioExtras.isEmpty
+        ? meta.audioCodec
+        : '${meta.audioCodec} (${audioExtras.join(', ')})';
+
+    final parts = <String>[
+      audioText,
+      if (meta.bitrate != 'Unknown') meta.bitrate,
+      if (meta.totalFrames > 0) '${meta.totalFrames}f',
+    ];
+    return parts.join('  |  ');
   }
 
   double _computeLocalProgress(VideoItem item) {
@@ -1054,30 +1188,23 @@ class _MergePageState extends State<MergePage> {
     );
   }
 
-  Widget _buildActiveProgressBanner(ColorScheme colorScheme) {
+  Widget _buildActiveProgressBanner() {
+    double globalProgress = 0.0;
+    if (_hasMerged) {
+      globalProgress = 1.0;
+    } else if (_totalMergeFrames > 0) {
+      globalProgress = (_currentGlobalFrame / _totalMergeFrames).clamp(0.0, 1.0);
+    }
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            'Frame: $_currentGlobalFrame',
-            style: TextStyle(
-              color: colorScheme.primary,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              fontFamily: 'monospace',
-            ),
-          ),
-          Text(
-            'Pass-Through Copy (-c copy)',
-            style: TextStyle(
-              color: colorScheme.secondary,
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+      child: GlobalMergeProgressBar(
+        progress: globalProgress,
+        currentFrame: _hasMerged ? _totalMergeFrames : _currentGlobalFrame,
+        totalFrames: _totalMergeFrames,
+        colorPreset: widget.progressColor,
+        isDark: _isDark,
+        trailingLabel: _hasMerged ? 'Completed' : 'Pass-Through (-c copy)',
       ),
     );
   }
@@ -1139,7 +1266,7 @@ class _MergePageState extends State<MergePage> {
                       )
                     : const Icon(Icons.merge_type_rounded),
                 label: Text(
-                  _isMerging ? 'Merging (${_mergeSeconds}s)' : 'Start Concat',
+                  _isMerging ? 'Merging (${_mergeSeconds}s)' : 'Merge',
                 ),
               ),
             ),
