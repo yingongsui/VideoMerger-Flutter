@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class SettingsPage extends StatefulWidget {
   final ThemeMode currentThemeMode;
@@ -16,7 +17,9 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   static const String _appName = 'VideoMerger';
-  static const String _appVersion = '1.0.0';
+  static const String _appVersion = 'v1.1.0';
+  static const String _githubUrl =
+      'https://github.com/yingongsui/VideoMerger-Flutter';
 
   late ThemeMode _selectedMode;
 
@@ -143,7 +146,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              'Version $_appVersion',
+                              _appVersion,
                               style: TextStyle(
                                 fontSize: 12.5,
                                 color: colorScheme.onSurfaceVariant,
@@ -182,6 +185,43 @@ class _SettingsPageState extends State<SettingsPage> {
                   subtitle: const Text(
                     'Combine multiple video files losslessly without re-encoding.',
                   ),
+                ),
+                Divider(
+                  height: 1,
+                  color: colorScheme.outlineVariant.withValues(alpha: 0.4),
+                ),
+                ListTile(
+                  leading: Icon(
+                    Icons.code_rounded,
+                    color: colorScheme.primary,
+                  ),
+                  title: const Text('GitHub Repository'),
+                  subtitle: const Text(
+                    _githubUrl,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, fontFamily: 'monospace'),
+                  ),
+                  trailing: Icon(
+                    Icons.copy_rounded,
+                    size: 18,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  onTap: () async {
+                    await Clipboard.setData(
+                      const ClipboardData(text: _githubUrl),
+                    );
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context)
+                      ..hideCurrentSnackBar()
+                      ..showSnackBar(
+                        const SnackBar(
+                          content: Text('GitHub URL copied to clipboard.'),
+                          behavior: SnackBarBehavior.floating,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                  },
                 ),
                 Divider(
                   height: 1,

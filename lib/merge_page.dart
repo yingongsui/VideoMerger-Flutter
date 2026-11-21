@@ -397,14 +397,15 @@ class _MergePageState extends State<MergePage> {
 
     return Scaffold(
       appBar: AppBar(
-        leading: IconButton(
-          tooltip: 'Settings',
-          icon: const Icon(Icons.settings_outlined),
-          onPressed: _openSettings,
-        ),
-        title: const Text(
-          'Direct-Stream Merger',
-          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18),
+        title: Row(
+          children: [
+            Icon(Icons.merge_type_rounded, color: colorScheme.primary),
+            const SizedBox(width: 8),
+            const Text(
+              'Direct-Stream Merger',
+              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18),
+            ),
+          ],
         ),
         actions: [
           if (_videoItems.isNotEmpty && !_isMerging)
@@ -413,6 +414,11 @@ class _MergePageState extends State<MergePage> {
               icon: const Icon(Icons.delete_sweep_outlined),
               onPressed: _clearQueue,
             ),
+          IconButton(
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: _openSettings,
+          ),
         ],
       ),
       body: Column(

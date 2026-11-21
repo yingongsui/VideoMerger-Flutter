@@ -15,7 +15,7 @@ class _VideoMergerAppState extends State<VideoMergerApp> {
   static const String _prefThemeModeKey = 'theme_mode';
   static const String _legacyDarkModeKey = 'is_dark_mode';
 
-  ThemeMode _themeMode = ThemeMode.dark;
+  ThemeMode _themeMode = ThemeMode.system;
 
   @override
   void initState() {

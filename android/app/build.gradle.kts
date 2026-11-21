@@ -32,9 +32,6 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        ndk {
-            abiFilters.add("arm64-v8a")
-        }
     }
 
     signingConfigs {
@@ -46,16 +43,27 @@ android {
         }
     }
 
-
     buildTypes {
         release {
-            isMinifyEnabled = false 
-            isShrinkResources = false 
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("release")        }
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 
+    packaging {
+        jniLibs {
+            excludes += setOf(
+                "lib/armeabi-v7a/**",
+                "lib/x86/**",
+                "lib/x86_64/**",
+            )
+        }
+    }
 }
 
 kotlin {

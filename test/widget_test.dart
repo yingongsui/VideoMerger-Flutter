@@ -27,6 +27,10 @@ void main() {
     expect(find.text('Theme'), findsOneWidget);
     expect(find.text('ABOUT'), findsOneWidget);
     expect(find.text('VideoMerger'), findsOneWidget);
+    expect(
+      find.text('https://github.com/yingongsui/VideoMerger-Flutter'),
+      findsOneWidget,
+    );
     expect(find.text('Open Source Licenses'), findsOneWidget);
 
     // Switch theme to Light inside Settings
