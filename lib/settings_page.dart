@@ -28,10 +28,10 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage>
     with SingleTickerProviderStateMixin {
-  static const String _appName = 'VideoMerger';
-  static const String _appVersion = 'v1.1.0';
+  static const String _appName = 'VideoToolKit';
+  static const String _appVersion = 'v2.0.0';
   static const String _githubUrl =
-      'https://github.com/yingongsui/VideoMerger-Flutter';
+      'https://github.com/yingongsui/VideoToolKit-Flutter';
 
   late ThemeMode _selectedMode;
   late ProgressBarStyle _selectedProgressStyle;
@@ -369,24 +369,18 @@ class _SettingsPageState extends State<SettingsPage>
                     ],
                   ),
                 ),
-                Divider(
-                  height: 1,
-                  color: colorScheme.outlineVariant.withValues(alpha: 0.4),
-                ),
+                _buildDivider(colorScheme),
                 ListTile(
                   leading: Icon(
                     Icons.bolt_rounded,
                     color: colorScheme.primary,
                   ),
-                  title: const Text('Merge Engine'),
+                  title: const Text('Stream Engine'),
                   subtitle: const Text(
-                    'FFmpeg Direct-Stream Concat (-c copy, lossless)',
+                    'FFmpeg Direct-Stream (-c copy, lossless)',
                   ),
                 ),
-                Divider(
-                  height: 1,
-                  color: colorScheme.outlineVariant.withValues(alpha: 0.4),
-                ),
+                _buildDivider(colorScheme),
                 ListTile(
                   leading: Icon(
                     Icons.info_outline_rounded,
@@ -394,13 +388,10 @@ class _SettingsPageState extends State<SettingsPage>
                   ),
                   title: const Text('About $_appName'),
                   subtitle: const Text(
-                    'Combine multiple video files losslessly without re-encoding.',
+                    'Lossless direct-stream video trimming & merging without re-encoding.',
                   ),
                 ),
-                Divider(
-                  height: 1,
-                  color: colorScheme.outlineVariant.withValues(alpha: 0.4),
-                ),
+                _buildDivider(colorScheme),
                 ListTile(
                   leading: Icon(
                     Icons.code_rounded,
@@ -425,10 +416,7 @@ class _SettingsPageState extends State<SettingsPage>
                     _showToast('GitHub URL copied to clipboard.');
                   },
                 ),
-                Divider(
-                  height: 1,
-                  color: colorScheme.outlineVariant.withValues(alpha: 0.4),
-                ),
+                _buildDivider(colorScheme),
                 ListTile(
                   leading: Icon(
                     Icons.description_outlined,
@@ -681,6 +669,13 @@ class _SettingsPageState extends State<SettingsPage>
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildDivider(ColorScheme colorScheme) {
+    return Divider(
+      height: 1,
+      color: colorScheme.outlineVariant.withValues(alpha: 0.4),
     );
   }
 

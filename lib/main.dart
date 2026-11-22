@@ -30,14 +30,8 @@ class _VideoMergerAppState extends State<VideoMergerApp> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final savedMode = prefs.getString(_prefThemeModeKey);
-      ThemeMode? resolved;
-      if (savedMode == 'system') {
-        resolved = ThemeMode.system;
-      } else if (savedMode == 'light') {
-        resolved = ThemeMode.light;
-      } else if (savedMode == 'dark') {
-        resolved = ThemeMode.dark;
-      } else if (prefs.containsKey(_legacyDarkModeKey)) {
+      ThemeMode? resolved = ThemeMode.values.asNameMap()[savedMode];
+      if (resolved == null && prefs.containsKey(_legacyDarkModeKey)) {
         resolved = prefs.getBool(_legacyDarkModeKey) == false
             ? ThemeMode.light
             : ThemeMode.dark;
@@ -111,7 +105,7 @@ class _VideoMergerAppState extends State<VideoMergerApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'VideoMerger',
+      title: 'VideoToolKit',
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(Brightness.light),
       darkTheme: _buildTheme(Brightness.dark),

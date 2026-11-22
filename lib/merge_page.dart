@@ -6,6 +6,7 @@ import 'file_tree_picker.dart';
 import 'floating_toast.dart';
 import 'progress_style.dart';
 import 'settings_page.dart';
+import 'trim_panel.dart';
 import 'video_service.dart';
 
 class VideoItem {
@@ -62,6 +63,22 @@ class _MergePageState extends State<MergePage> {
   String? _customTargetFolder;
   String? _customOutputFileName;
 
+  double _trimStartSeconds = 0.0;
+  double _trimEndSeconds = 0.0;
+
+  bool get _isTrimMode => _videoItems.length == 1;
+
+  void _syncTrimRangeIfSingle() {
+    if (_videoItems.length == 1) {
+      final dur = _videoItems.first.metadata?.durationSeconds ?? 0.0;
+      _trimStartSeconds = 0.0;
+      _trimEndSeconds = dur;
+    } else {
+      _trimStartSeconds = 0.0;
+      _trimEndSeconds = 0.0;
+    }
+  }
+
   @override
   void dispose() {
     _stopTimer();
@@ -71,6 +88,7 @@ class _MergePageState extends State<MergePage> {
 
   String _computeDefaultFileName() {
     if (_videoItems.isEmpty) return 'output_merged.mp4';
+    final suffix = _isTrimMode ? '_trimmed' : '_merged';
     final firstName = _videoItems.first.name;
     final dotIndex = firstName.lastIndexOf('.');
     if (dotIndex > 0) {
@@ -78,9 +96,9 @@ class _MergePageState extends State<MergePage> {
       final ext = firstName.substring(dotIndex).toLowerCase();
       final safeExt =
           VideoService.supportedExtensions.contains(ext) ? ext : '.mp4';
-      return '${base}_merged$safeExt';
+      return '$base$suffix$safeExt';
     }
-    return '${firstName}_merged.mp4';
+    return '$firstName$suffix.mp4';
   }
 
   String get _resolvedOutputFileName =>
@@ -94,25 +112,38 @@ class _MergePageState extends State<MergePage> {
     return 'Default (Same as 1st video)';
   }
 
-  Future<void> _addFiles() async {
+  Future<List<String>?> _openFilePicker({
+    required bool pickFolderMode,
+    List<String> allowedExtensions = const [],
+    required String permissionDeniedMessage,
+  }) async {
     final hasPermission = await VideoService.requestStoragePermission();
     if (!hasPermission) {
-      _showToast('Storage permission is required to browse video files.');
-      return;
+      _showToast(permissionDeniedMessage, type: ToastType.warning);
+      return null;
     }
-    final allowedExtensions = await VideoService.getAllSupportedExtensions();
-    if (!mounted) return;
+    if (!mounted) return null;
 
-    final selectedPaths = await Navigator.push<List<String>>(
+    return Navigator.push<List<String>>(
       context,
       PageRouteBuilder(
         pageBuilder: (_, _, _) => MultiFileTreePicker(
           allowedExtensions: allowedExtensions,
-          pickFolderMode: false,
+          pickFolderMode: pickFolderMode,
         ),
         transitionDuration: Duration.zero,
         reverseTransitionDuration: Duration.zero,
       ),
+    );
+  }
+
+  Future<void> _addFiles() async {
+    final allowedExtensions = await VideoService.getAllSupportedExtensions();
+    final selectedPaths = await _openFilePicker(
+      pickFolderMode: false,
+      allowedExtensions: allowedExtensions,
+      permissionDeniedMessage:
+          'Storage permission is required to browse video files.',
     );
 
     if (selectedPaths == null || selectedPaths.isEmpty || !mounted) return;
@@ -130,36 +161,37 @@ class _MergePageState extends State<MergePage> {
       if (_videoItems.any((item) => item.path == path)) continue;
 
       final newItem = VideoItem(path);
-      setState(() => _videoItems.add(newItem));
+      setState(() {
+        _videoItems.add(newItem);
+        if (_videoItems.length != 1) {
+          _trimStartSeconds = 0.0;
+          _trimEndSeconds = 0.0;
+        }
+      });
 
       VideoService.generateThumbnail(path).then((thumb) {
         if (mounted) setState(() => newItem.thumbPath = thumb);
       });
 
       VideoService.getVideoMetadata(path).then((meta) {
-        if (mounted) setState(() => newItem.metadata = meta);
+        if (mounted) {
+          setState(() {
+            newItem.metadata = meta;
+            if (_videoItems.length == 1 && _videoItems.first == newItem) {
+              _trimStartSeconds = 0.0;
+              _trimEndSeconds = meta.durationSeconds;
+            }
+          });
+        }
       });
     }
   }
 
   Future<void> _selectTargetFolder() async {
-    final hasPermission = await VideoService.requestStoragePermission();
-    if (!hasPermission) {
-      _showToast('Storage permission is required to choose a folder.');
-      return;
-    }
-    if (!mounted) return;
-
-    final selectedFolder = await Navigator.push<List<String>>(
-      context,
-      PageRouteBuilder(
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: Duration.zero,
-        pageBuilder: (_, _, _) => const MultiFileTreePicker(
-          allowedExtensions: [],
-          pickFolderMode: true,
-        ),
-      ),
+    final selectedFolder = await _openFilePicker(
+      pickFolderMode: true,
+      permissionDeniedMessage:
+          'Storage permission is required to choose a folder.',
     );
 
     if (selectedFolder != null && selectedFolder.isNotEmpty && mounted) {
@@ -212,24 +244,27 @@ class _MergePageState extends State<MergePage> {
       _videoItems.clear();
       _hasMerged = false;
       _currentGlobalFrame = 0;
+      _trimStartSeconds = 0.0;
+      _trimEndSeconds = 0.0;
       _consoleLogs.clear();
       _currentCommand = '';
       _customOutputFileName = null;
     });
   }
 
-  void _stopMerge() {
+  void _stopOperation() {
     if (!_isMerging) return;
 
+    final action = _isTrimMode ? 'Trim' : 'Merge';
     VideoService.cancelCurrentOperation();
     _stopTimer();
 
     setState(() {
       _isMerging = false;
-      _appendLog('[USER ACTION] Concat pipeline manually terminated.');
+      _appendLog('[USER ACTION] $action pipeline manually terminated.');
     });
     _scrollToBottom();
-    _showToast('Merge force-stopped.');
+    _showToast('$action force-stopped.', type: ToastType.warning);
   }
 
   void _startTimer() {
@@ -274,26 +309,17 @@ class _MergePageState extends State<MergePage> {
     _showToast('Console logs copied to clipboard.');
   }
 
-  Future<void> _startMerge() async {
-    if (_videoItems.isEmpty) {
-      _showToast('Add at least one video file first.');
-      return;
-    }
-
-    final finalOutputDirPath =
-        _customTargetFolder ?? File(_videoItems.first.path).parent.path;
-    final computedOutPath = '$finalOutputDirPath/$_resolvedOutputFileName';
-
-    int currentOffsetFrames = 0;
-    for (final item in _videoItems) {
-      item.startFrame = currentOffsetFrames;
-      final itemFrames = item.metadata?.totalFrames ?? 0;
-      item.endFrame = currentOffsetFrames + itemFrames;
-      currentOffsetFrames = item.endFrame;
-    }
-
-    final totalFrames = currentOffsetFrames;
-
+  Future<void> _runPipelineJob({
+    required String commandDisplay,
+    required int totalFrames,
+    required String successVerb,
+    required String failMessage,
+    required Future<String?> Function(
+      Function(int) onProgressFrames,
+      Function(String) onLogReceived,
+    )
+    runner,
+  }) async {
     setState(() {
       _consoleLogs.clear();
       _hasMerged = false;
@@ -301,23 +327,17 @@ class _MergePageState extends State<MergePage> {
       _isConsoleExpanded = true;
       _currentGlobalFrame = 0;
       _totalMergeFrames = totalFrames;
-      _currentCommand =
-          'ffmpeg -y -f concat -safe 0 -i merge_list.txt -c copy "$computedOutPath"';
+      _currentCommand = commandDisplay;
     });
     _startTimer();
 
-    final paths = _videoItems.map((item) => item.path).toList();
-
-    final outputPath = await VideoService.mergeVideosDirectly(
-      filePaths: paths,
-      totalFrames: totalFrames,
-      outputPath: computedOutPath,
-      onProgressFrames: (currentFrame) {
+    final outputPath = await runner(
+      (currentFrame) {
         if (mounted) {
           setState(() => _currentGlobalFrame = currentFrame);
         }
       },
-      onLogReceived: (logLine) {
+      (logLine) {
         if (mounted) {
           setState(() => _appendLog(logLine));
           _scrollToBottom();
@@ -338,7 +358,7 @@ class _MergePageState extends State<MergePage> {
     if (outputPath != null) {
       final fileName = outputPath.split('/').last;
       _showToast(
-        'Merged in ${_mergeSeconds}s • $fileName',
+        '$successVerb in ${_mergeSeconds}s • $fileName',
         type: ToastType.success,
       );
     } else {
@@ -346,11 +366,82 @@ class _MergePageState extends State<MergePage> {
           _consoleLogs.last.contains('[USER ACTION]')) {
         return;
       }
-      _showToast(
-        'Merge failed. Check stream compatibility or logs.',
-        type: ToastType.error,
-      );
+      _showToast(failMessage, type: ToastType.error);
     }
+  }
+
+  Future<void> _startTrim() async {
+    if (_videoItems.length != 1) return;
+    final item = _videoItems.first;
+    final duration = _trimEndSeconds - _trimStartSeconds;
+    if (duration <= 0) {
+      _showToast('Invalid trim range.', type: ToastType.warning);
+      return;
+    }
+
+    final finalOutputDirPath =
+        _customTargetFolder ?? File(item.path).parent.path;
+    final computedOutPath = '$finalOutputDirPath/$_resolvedOutputFileName';
+
+    final fps =
+        (item.metadata?.fpsValue ?? 0.0) > 0 ? item.metadata!.fpsValue : 30.0;
+    final expectedFrames = (duration * fps).round().clamp(1, 1 << 30);
+
+    item.startFrame = 0;
+    item.endFrame = expectedFrames;
+
+    await _runPipelineJob(
+      commandDisplay:
+          'ffmpeg -y -ss ${_trimStartSeconds.toStringAsFixed(3)} -i "${item.name}" -t ${duration.toStringAsFixed(3)} -c copy -avoid_negative_ts make_zero "$computedOutPath"',
+      totalFrames: expectedFrames,
+      successVerb: 'Trimmed',
+      failMessage: 'Trim failed. Check console logs for details.',
+      runner: (onProgress, onLog) => VideoService.trimVideoDirectly(
+        inputPath: item.path,
+        startSeconds: _trimStartSeconds,
+        endSeconds: _trimEndSeconds,
+        expectedFrames: expectedFrames,
+        outputPath: computedOutPath,
+        onProgressFrames: onProgress,
+        onLogReceived: onLog,
+      ),
+    );
+  }
+
+  Future<void> _startMerge() async {
+    if (_videoItems.isEmpty) {
+      _showToast('Add at least one video file first.');
+      return;
+    }
+
+    final finalOutputDirPath =
+        _customTargetFolder ?? File(_videoItems.first.path).parent.path;
+    final computedOutPath = '$finalOutputDirPath/$_resolvedOutputFileName';
+
+    int currentOffsetFrames = 0;
+    for (final item in _videoItems) {
+      item.startFrame = currentOffsetFrames;
+      final itemFrames = item.metadata?.totalFrames ?? 0;
+      item.endFrame = currentOffsetFrames + itemFrames;
+      currentOffsetFrames = item.endFrame;
+    }
+
+    final paths = _videoItems.map((item) => item.path).toList();
+
+    await _runPipelineJob(
+      commandDisplay:
+          'ffmpeg -y -f concat -safe 0 -i merge_list.txt -c copy "$computedOutPath"',
+      totalFrames: currentOffsetFrames,
+      successVerb: 'Merged',
+      failMessage: 'Merge failed. Check stream compatibility or logs.',
+      runner: (onProgress, onLog) => VideoService.mergeVideosDirectly(
+        filePaths: paths,
+        totalFrames: currentOffsetFrames,
+        outputPath: computedOutPath,
+        onProgressFrames: onProgress,
+        onLogReceived: onLog,
+      ),
+    );
   }
 
   void _showToast(String message, {ToastType type = ToastType.info}) {
@@ -423,10 +514,9 @@ class _MergePageState extends State<MergePage> {
                   Padding(
                     padding: const EdgeInsets.only(top: 2, bottom: 8),
                     child: Text(
-                      '${_videoItems[i].metadata!.videoCodec} (${_videoItems[i].metadata!.videoProfile}) • '
                       '${_videoItems[i].metadata!.resolution} • ${_videoItems[i].metadata!.fps}\n'
-                      'PixFmt: ${_videoItems[i].metadata!.pixelFormat} • TB: ${_videoItems[i].metadata!.videoTimeBase}\n'
-                      'Audio: ${_videoItems[i].metadata!.audioCodec} (${_videoItems[i].metadata!.audioSampleRate}, ${_videoItems[i].metadata!.audioChannelLayout})',
+                      '${_formatVideoStreamLine(_videoItems[i].metadata!)}\n'
+                      '${_formatAudioAndBitrateLine(_videoItems[i].metadata!)}',
                       style: TextStyle(
                         fontSize: 11,
                         fontFamily: 'monospace',
@@ -506,7 +596,7 @@ class _MergePageState extends State<MergePage> {
             Icon(Icons.merge_type_rounded, color: colorScheme.primary),
             const SizedBox(width: 8),
             const Text(
-              'Direct-Stream Merger',
+              'VideoToolKit',
               style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18),
             ),
           ],
@@ -533,7 +623,9 @@ class _MergePageState extends State<MergePage> {
           Expanded(
             child: _videoItems.isEmpty
                 ? _buildEmptyState(colorScheme)
-                : _buildVideoList(colorScheme),
+                : _isTrimMode
+                    ? _buildTrimWorkspace(colorScheme)
+                    : _buildVideoList(colorScheme),
           ),
           if (_videoItems.isNotEmpty) _buildConsolePanel(colorScheme),
           if (_isMerging || _hasMerged) _buildActiveProgressBanner(),
@@ -780,7 +872,7 @@ class _MergePageState extends State<MergePage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Select videos to concatenate losslessly without re-encoding.\nDrag items to reorder before merging.',
+              'Select 1 video to trim losslessly, or 2+ videos to merge.\nDrag items to reorder before merging.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 13,
@@ -791,6 +883,31 @@ class _MergePageState extends State<MergePage> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildTrimWorkspace(ColorScheme colorScheme) {
+    final item = _videoItems.first;
+    return ListView(
+      padding: const EdgeInsets.only(top: 4, bottom: 8),
+      children: [
+        _buildVideoCard(item, 0, colorScheme, showDragHandle: false),
+        TrimPanel(
+          videoPath: item.path,
+          metadata: item.metadata,
+          startSeconds: _trimStartSeconds,
+          endSeconds: _trimEndSeconds,
+          enabled: !_isMerging,
+          accentPreset: widget.progressColor,
+          onRangeChanged: (startSec, endSec) {
+            setState(() {
+              _hasMerged = false;
+              _trimStartSeconds = startSec;
+              _trimEndSeconds = endSec;
+            });
+          },
+        ),
+      ],
     );
   }
 
@@ -806,13 +923,26 @@ class _MergePageState extends State<MergePage> {
           _videoItems.insert(newIndex, item);
         });
       },
-      itemBuilder: (context, i) {
-        final item = _videoItems[i];
-        final localProgress = _computeLocalProgress(item);
-        final isActiveSlot =
-            _isMerging && localProgress > 0.0 && localProgress < 1.0;
+      itemBuilder: (context, i) => _buildVideoCard(
+        _videoItems[i],
+        i,
+        colorScheme,
+        showDragHandle: true,
+      ),
+    );
+  }
 
-        return Card(
+  Widget _buildVideoCard(
+    VideoItem item,
+    int i,
+    ColorScheme colorScheme, {
+    required bool showDragHandle,
+  }) {
+    final localProgress = _computeLocalProgress(item);
+    final isActiveSlot =
+        _isMerging && localProgress > 0.0 && localProgress < 1.0;
+
+    return Card(
           key: ValueKey(item.path),
           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           clipBehavior: Clip.antiAlias,
@@ -942,26 +1072,30 @@ class _MergePageState extends State<MergePage> {
                             size: 20,
                             color: colorScheme.error,
                           ),
-                          onPressed: () =>
-                              setState(() => _videoItems.removeAt(i)),
+                          onPressed: () {
+                            setState(() {
+                              _videoItems.removeAt(i);
+                              _hasMerged = false;
+                              _syncTrimRangeIfSingle();
+                            });
+                          },
                         ),
-                        ReorderableDragStartListener(
-                          index: i,
-                          child: Padding(
-                            padding: const EdgeInsets.all(6),
-                            child: Icon(
-                              Icons.drag_handle_rounded,
-                              color: colorScheme.onSurfaceVariant,
+                        if (showDragHandle)
+                          ReorderableDragStartListener(
+                            index: i,
+                            child: Padding(
+                              padding: const EdgeInsets.all(6),
+                              child: Icon(
+                                Icons.drag_handle_rounded,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
                             ),
                           ),
-                        ),
                       ],
                     ),
             ),
           ),
         );
-      },
-    );
   }
 
   String _formatVideoStreamLine(VideoMetadata meta) {
@@ -1227,7 +1361,7 @@ class _MergePageState extends State<MergePage> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                       ),
-                      onPressed: _stopMerge,
+                      onPressed: _stopOperation,
                       icon: const Icon(Icons.stop_circle_outlined),
                       label: const Text('Stop'),
                     )
@@ -1254,7 +1388,7 @@ class _MergePageState extends State<MergePage> {
                 ),
                 onPressed: (_isMerging || _videoItems.isEmpty)
                     ? null
-                    : _startMerge,
+                    : (_isTrimMode ? _startTrim : _startMerge),
                 icon: _isMerging
                     ? const SizedBox(
                         width: 16,
@@ -1264,9 +1398,23 @@ class _MergePageState extends State<MergePage> {
                           color: Colors.white,
                         ),
                       )
-                    : const Icon(Icons.merge_type_rounded),
+                    : Icon(
+                        _videoItems.isEmpty
+                            ? Icons.hourglass_empty_rounded
+                            : _isTrimMode
+                                ? Icons.content_cut_rounded
+                                : Icons.merge_type_rounded,
+                      ),
                 label: Text(
-                  _isMerging ? 'Merging (${_mergeSeconds}s)' : 'Merge',
+                  _isMerging
+                      ? (_isTrimMode
+                          ? 'Trimming (${_mergeSeconds}s)'
+                          : 'Merging (${_mergeSeconds}s)')
+                      : _videoItems.isEmpty
+                          ? 'Waiting'
+                          : _isTrimMode
+                              ? 'Trim'
+                              : 'Merge',
                 ),
               ),
             ),

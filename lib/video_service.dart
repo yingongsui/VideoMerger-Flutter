@@ -59,6 +59,16 @@ class StreamCompatibilityResult {
 class VideoService {
   static const String _prefCustomExtKey = 'custom_video_extensions';
 
+  /// Serializes short native FFprobe/FFmpeg utility calls so libffmpegkit's
+  /// native log queue is never raced concurrently across threads.
+  static Future<void> _nativeQueue = Future<void>.value();
+
+  static Future<T> _runSerialized<T>(Future<T> Function() action) {
+    final next = _nativeQueue.then((_) => action(), onError: (_) => action());
+    _nativeQueue = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
   static const List<String> supportedExtensions = [
     '.mp4',
     '.mkv',
@@ -77,16 +87,21 @@ class VideoService {
     return '.$cleaned';
   }
 
+  static List<String> _sanitizeCustomExtensions(Iterable<String> raw) {
+    return raw
+        .map(normalizeExtension)
+        .whereType<String>()
+        .where((ext) => !supportedExtensions.contains(ext))
+        .toSet()
+        .toList();
+  }
+
   static Future<List<String>> loadCustomExtensions() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getStringList(_prefCustomExtKey) ?? const [];
-      return saved
-          .map(normalizeExtension)
-          .whereType<String>()
-          .where((ext) => !supportedExtensions.contains(ext))
-          .toSet()
-          .toList();
+      return _sanitizeCustomExtensions(
+        prefs.getStringList(_prefCustomExtKey) ?? const [],
+      );
     } catch (_) {
       return [];
     }
@@ -95,13 +110,10 @@ class VideoService {
   static Future<void> saveCustomExtensions(List<String> extensions) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final normalized = extensions
-          .map(normalizeExtension)
-          .whereType<String>()
-          .where((ext) => !supportedExtensions.contains(ext))
-          .toSet()
-          .toList();
-      await prefs.setStringList(_prefCustomExtKey, normalized);
+      await prefs.setStringList(
+        _prefCustomExtKey,
+        _sanitizeCustomExtensions(extensions),
+      );
     } catch (_) {}
   }
 
@@ -139,6 +151,22 @@ class VideoService {
     return hours > 0
         ? '${hours.toString().padLeft(2, '0')}:$minPart:$secPart'
         : '$minPart:$secPart';
+  }
+
+  /// Formats seconds with millisecond precision (`HH:MM:SS.mmm` or `MM:SS.mmm`).
+  static String formatTimestamp(double seconds) {
+    final safe = seconds < 0 ? 0.0 : seconds;
+    final int totalMs = (safe * 1000).round();
+    final int hours = totalMs ~/ 3600000;
+    final int minutes = (totalMs % 3600000) ~/ 60000;
+    final int secs = (totalMs % 60000) ~/ 1000;
+    final int ms = totalMs % 1000;
+    final String mStr = minutes.toString().padLeft(2, '0');
+    final String sStr = secs.toString().padLeft(2, '0');
+    final String msStr = ms.toString().padLeft(3, '0');
+    return hours > 0
+        ? '${hours.toString().padLeft(2, '0')}:$mStr:$sStr.$msStr'
+        : '$mStr:$sStr.$msStr';
   }
 
   /// Checks whether all metadata entries share compatible streams for lossless `-c copy`.
@@ -214,44 +242,29 @@ class VideoService {
           '${cacheDir.path}/thumb_${videoPath.hashCode}_$mtime.jpg';
       if (await File(thumbPath).exists()) return thumbPath;
 
-      // Try seeking to 1s first for a meaningful frame
-      var session = await FFmpegKit.executeWithArguments([
-        '-y',
-        '-ss',
-        '00:00:01',
-        '-i',
-        videoPath,
-        '-vframes',
-        '1',
-        '-q:v',
-        '4',
-        '-vf',
-        'scale=160:-1',
-        thumbPath,
-      ]);
-
-      if (ReturnCode.isSuccess(await session.getReturnCode()) &&
-          await File(thumbPath).exists()) {
-        return thumbPath;
-      }
-
-      // Fallback to first frame for videos shorter than 1 second
-      session = await FFmpegKit.executeWithArguments([
-        '-y',
-        '-i',
-        videoPath,
-        '-vframes',
-        '1',
-        '-q:v',
-        '4',
-        '-vf',
-        'scale=160:-1',
-        thumbPath,
-      ]);
-
-      if (ReturnCode.isSuccess(await session.getReturnCode()) &&
-          await File(thumbPath).exists()) {
-        return thumbPath;
+      // Try 1s first for a meaningful frame, then fall back to the first frame for short clips
+      for (final seekArgs in const [
+        ['-ss', '00:00:01'],
+        <String>[],
+      ]) {
+        final ok = await _runSerialized(() async {
+          final session = await FFmpegKit.executeWithArguments([
+            '-y',
+            ...seekArgs,
+            '-i',
+            videoPath,
+            '-vframes',
+            '1',
+            '-q:v',
+            '4',
+            '-vf',
+            'scale=160:-1',
+            thumbPath,
+          ]);
+          return ReturnCode.isSuccess(await session.getReturnCode()) &&
+              await File(thumbPath).exists();
+        });
+        if (ok) return thumbPath;
       }
     } catch (e) {
       debugPrint('[VideoService] Thumbnail generation failed: $e');
@@ -290,7 +303,9 @@ class VideoService {
     } catch (_) {}
 
     try {
-      final session = await FFprobeKit.getMediaInformation(videoPath);
+      final session = await _runSerialized(
+        () => FFprobeKit.getMediaInformation(videoPath),
+      );
       final info = session.getMediaInformation();
       if (info != null) {
         String bitrate = 'Unknown';
@@ -411,6 +426,46 @@ class VideoService {
     return VideoMetadata(size: sizeStr, sizeBytes: sizeBytes);
   }
 
+  /// Shared FFmpeg runner with frame progress & log streaming callbacks.
+  static Future<String?> _executeStreamJob({
+    required List<String> args,
+    required int totalFrames,
+    required String outputPath,
+    required String jobLabel,
+    required Function(int) onProgressFrames,
+    required Function(String) onLogReceived,
+  }) async {
+    FFmpegKitConfig.enableStatisticsCallback((statistics) {
+      try {
+        final int currentFrame = statistics.getVideoFrameNumber();
+        if (currentFrame > 0) {
+          onProgressFrames(currentFrame);
+        }
+      } catch (_) {}
+    });
+
+    FFmpegKitConfig.enableLogCallback((log) {
+      final msg = log.getMessage().trimRight();
+      if (msg.isNotEmpty) {
+        onLogReceived(msg);
+      }
+    });
+
+    debugPrint('[VideoService] Starting FFmpeg $jobLabel -> $outputPath');
+    final session = await FFmpegKit.executeWithArguments(args);
+    final returnCode = await session.getReturnCode();
+
+    FFmpegKitConfig.enableStatisticsCallback(null);
+    FFmpegKitConfig.enableLogCallback(null);
+
+    if (ReturnCode.isSuccess(returnCode)) {
+      onProgressFrames(totalFrames);
+      return outputPath;
+    }
+    debugPrint('[VideoService] FFmpeg $jobLabel failed with code: $returnCode');
+    return null;
+  }
+
   /// Lossless direct-stream concatenation using FFmpeg concat demuxer (`-c copy`).
   static Future<String?> mergeVideosDirectly({
     required List<String> filePaths,
@@ -435,51 +490,260 @@ class VideoService {
     }
     await listFile.writeAsString(buffer.toString());
 
-    FFmpegKitConfig.enableStatisticsCallback((statistics) {
+    try {
+      return await _executeStreamJob(
+        args: [
+          '-y',
+          '-f',
+          'concat',
+          '-safe',
+          '0',
+          '-i',
+          listFile.path,
+          '-c',
+          'copy',
+          outputPath,
+        ],
+        totalFrames: totalFrames,
+        outputPath: outputPath,
+        jobLabel: 'concat',
+        onProgressFrames: onProgressFrames,
+        onLogReceived: onLogReceived,
+      );
+    } finally {
       try {
-        final int currentFrame = statistics.getVideoFrameNumber();
-        if (currentFrame > 0) {
-          onProgressFrames(currentFrame);
-        }
+        if (await listFile.exists()) await listFile.delete();
       } catch (_) {}
-    });
+    }
+  }
 
-    FFmpegKitConfig.enableLogCallback((log) {
-      final msg = log.getMessage().trimRight();
-      if (msg.isNotEmpty) {
-        onLogReceived(msg);
-      }
-    });
-
-    debugPrint('[VideoService] Starting FFmpeg concat -> $outputPath');
-    final session = await FFmpegKit.executeWithArguments([
-      '-y',
-      '-f',
-      'concat',
-      '-safe',
-      '0',
-      '-i',
-      listFile.path,
-      '-c',
-      'copy',
-      outputPath,
-    ]);
-    final returnCode = await session.getReturnCode();
-
-    FFmpegKitConfig.enableStatisticsCallback(null);
-    FFmpegKitConfig.enableLogCallback(null);
+  /// Reads keyframe (I-frame) timestamps in a bounded local window `[windowStart, windowStart + windowDuration]`
+  /// using FFprobe `-read_intervals`. Bounded output prevents native log-buffer OOM on long videos.
+  static Future<List<double>> getKeyframesInWindow(
+    String videoPath, {
+    required double windowStart,
+    double windowDuration = 24.0,
+  }) async {
+    final safeStart = windowStart < 0 ? 0.0 : windowStart;
+    final interval =
+        '${safeStart.toStringAsFixed(2)}%+$windowDuration';
 
     try {
-      if (await listFile.exists()) await listFile.delete();
-    } catch (_) {}
+      return await _runSerialized(() async {
+        final session = await FFprobeKit.executeWithArguments([
+          '-v',
+          'error',
+          '-select_streams',
+          'v:0',
+          '-read_intervals',
+          interval,
+          '-show_entries',
+          'packet=pts_time,dts_time,flags',
+          '-of',
+          'csv=p=0',
+          videoPath,
+        ]);
+        if (!ReturnCode.isSuccess(await session.getReturnCode())) {
+          return const <double>[];
+        }
 
-    if (ReturnCode.isSuccess(returnCode)) {
-      onProgressFrames(totalFrames);
-      return outputPath;
-    } else {
-      debugPrint('[VideoService] FFmpeg concat failed with code: $returnCode');
-      return null;
+        final output = await session.getOutput();
+        if (output == null || output.isEmpty) return const <double>[];
+
+        final keyframes = <double>[];
+        for (final rawLine in output.split('\n')) {
+          final line = rawLine.trim();
+          if (line.isEmpty) continue;
+          final parts = line.split(',');
+          if (parts.length < 3) continue;
+          if (!parts[2].contains('K')) continue;
+
+          final ts = double.tryParse(parts[0]) ?? double.tryParse(parts[1]);
+          if (ts != null && ts >= 0) {
+            if (keyframes.isEmpty || (ts - keyframes.last).abs() > 0.001) {
+              keyframes.add(ts);
+            }
+          }
+        }
+        keyframes.sort();
+        return keyframes;
+      });
+    } catch (e) {
+      debugPrint('[VideoService] Keyframe window scan failed: $e');
+      return const [];
     }
+  }
+
+  /// Queries the nearest keyframe around [targetSeconds] using a safe bounded probe window.
+  static Future<double?> queryNearestKeyframe(
+    String videoPath,
+    double targetSeconds,
+  ) async {
+    final kfs = await getKeyframesInWindow(
+      videoPath,
+      windowStart: (targetSeconds - 15.0).clamp(0.0, double.infinity),
+      windowDuration: 30.0,
+    );
+    return findNearestKeyframe(kfs, targetSeconds);
+  }
+
+  /// Queries the previous keyframe before [targetSeconds].
+  static Future<double?> queryPrevKeyframe(
+    String videoPath,
+    double targetSeconds,
+  ) async {
+    if (targetSeconds <= 0.01) return null;
+    for (final span in const [20.0, 60.0]) {
+      final start = (targetSeconds - span).clamp(0.0, double.infinity);
+      final kfs = await getKeyframesInWindow(
+        videoPath,
+        windowStart: start,
+        windowDuration: (targetSeconds - start) + 1.0,
+      );
+      final prev = findPrevKeyframe(kfs, targetSeconds);
+      if (prev != null) return prev;
+      if (start == 0.0) break;
+    }
+    return null;
+  }
+
+  /// Queries the next keyframe after [targetSeconds].
+  static Future<double?> queryNextKeyframe(
+    String videoPath,
+    double targetSeconds,
+    double totalDuration,
+  ) async {
+    if (targetSeconds >= totalDuration - 0.01) return null;
+    for (final span in const [20.0, 60.0]) {
+      final start = (targetSeconds - 0.5).clamp(0.0, double.infinity);
+      final kfs = await getKeyframesInWindow(
+        videoPath,
+        windowStart: start,
+        windowDuration: span,
+      );
+      final next = findNextKeyframe(kfs, targetSeconds);
+      if (next != null) return next;
+      if (start + span >= totalDuration) break;
+    }
+    return null;
+  }
+
+  /// Finds the nearest keyframe timestamp to [target] in a sorted [keyframes] list.
+  static double? findNearestKeyframe(List<double> keyframes, double target) {
+    if (keyframes.isEmpty) return null;
+    double best = keyframes.first;
+    double bestDist = (best - target).abs();
+    for (final kf in keyframes) {
+      final dist = (kf - target).abs();
+      if (dist < bestDist) {
+        best = kf;
+        bestDist = dist;
+      } else if (kf > target) {
+        break;
+      }
+    }
+    return best;
+  }
+
+  /// Finds the strictly previous keyframe before [target] (with small epsilon).
+  static double? findPrevKeyframe(List<double> keyframes, double target) {
+    double? prev;
+    for (final kf in keyframes) {
+      if (kf < target - 0.005) {
+        prev = kf;
+      } else {
+        break;
+      }
+    }
+    return prev;
+  }
+
+  /// Finds the strictly next keyframe after [target] (with small epsilon).
+  static double? findNextKeyframe(List<double> keyframes, double target) {
+    for (final kf in keyframes) {
+      if (kf > target + 0.005) {
+        return kf;
+      }
+    }
+    return null;
+  }
+
+  /// Extracts a frame-accurate preview image at [seconds] using fast pre-seek + exact decode.
+  static Future<String?> extractFramePreview(
+    String videoPath,
+    double seconds, {
+    required String tag,
+  }) async {
+    try {
+      final cacheDir = await getTemporaryDirectory();
+      final safeSec = seconds < 0 ? 0.0 : seconds;
+      final msKey = (safeSec * 1000).round();
+      final outPath =
+          '${cacheDir.path}/trim_${tag}_${videoPath.hashCode}_$msKey.jpg';
+
+      if (await File(outPath).exists()) return outPath;
+
+      final seekArgs = safeSec > 2.0
+          ? ['-ss', (safeSec - 2.0).toStringAsFixed(3), '-i', videoPath, '-ss', '2.000']
+          : ['-i', videoPath, '-ss', safeSec.toStringAsFixed(3)];
+
+      final ok = await _runSerialized(() async {
+        final session = await FFmpegKit.executeWithArguments([
+          '-y',
+          ...seekArgs,
+          '-frames:v',
+          '1',
+          '-q:v',
+          '4',
+          '-vf',
+          'scale=320:-1',
+          outPath,
+        ]);
+        return ReturnCode.isSuccess(await session.getReturnCode()) &&
+            await File(outPath).exists();
+      });
+      if (ok) return outPath;
+    } catch (e) {
+      debugPrint('[VideoService] Frame preview extraction failed: $e');
+    }
+    return null;
+  }
+
+  /// Lossless direct-stream trim (`-c copy` with clean timestamp reset).
+  static Future<String?> trimVideoDirectly({
+    required String inputPath,
+    required double startSeconds,
+    required double endSeconds,
+    required int expectedFrames,
+    required String outputPath,
+    required Function(int) onProgressFrames,
+    required Function(String) onLogReceived,
+  }) async {
+    final duration = endSeconds - startSeconds;
+    if (duration <= 0) return null;
+    if (!await requestStoragePermission()) return null;
+
+    return _executeStreamJob(
+      args: [
+        '-y',
+        '-ss',
+        startSeconds.toStringAsFixed(3),
+        '-i',
+        inputPath,
+        '-t',
+        duration.toStringAsFixed(3),
+        '-c',
+        'copy',
+        '-avoid_negative_ts',
+        'make_zero',
+        outputPath,
+      ],
+      totalFrames: expectedFrames,
+      outputPath: outputPath,
+      jobLabel: 'trim',
+      onProgressFrames: onProgressFrames,
+      onLogReceived: onLogReceived,
+    );
   }
 
   static void cancelCurrentOperation() {

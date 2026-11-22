@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="assets/icon/icon.png" width="96" height="96" alt="VideoMerger Icon" />
+<img src="assets/icon/icon.png" width="96" height="96" alt="VideoToolKit Icon" />
 
-# VideoMerger
+# VideoToolKit
 
-**Lossless Direct-Stream Video Merger for Android (Flutter + FFmpeg)**
+**Lossless Direct-Stream Video Trimmer & Merger for Android (Flutter + FFmpeg)**
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 [![Dart](https://img.shields.io/badge/Dart-%5E3.11-0175C2?logo=dart&logoColor=white)](https://dart.dev)
@@ -20,26 +20,30 @@
 ## English
 
 ### Features
-- **Lossless Direct-Stream Concatenation (`-c copy`)**: Combines multiple video files using FFmpeg's `concat` demuxer without re-encoding, preserving original video/audio quality at disk I/O speed.
-- **Dual-Volume File Browser**: Supports both internal shared storage and external SD cards with persistent last-folder memory, breadcrumb navigation, select-all toggle, and cached video thumbnails (`.mp4`, `.mkv`, `.mov`, `.avi`, `.ts`, `.webm`).
-- **Stream Diagnostics & Compatibility Check**: Inspects resolution, duration, FPS, file size, video/audio codecs, bitrate, and frame count via FFprobe, and automatically warns about codec/resolution mismatches before merging.
-- **Queue Management & Live Console**: Drag-to-reorder clips, custom output directory & filename, real-time frame progress tracking, instant cancel, and collapsible/copyable FFmpeg runtime logs.
-- **Material 3 & Android 13+ Themed Icon**: Supports **System / Light / Dark** themes (defaults to System) and includes a pixel-matched **Monochrome adaptive icon** for Material You.
+- **Lossless Direct-Stream Trim & Merge (`-c copy`)**:
+  - **1 Video → Trim Mode**: Coarse time `RangeSlider` + live Start/End frame previews; context-aware fine controls snap **Start** to exact keyframes (`Prev KF` / `Snap KF` / `Next KF` + `Auto-Snap`) and step **End** by frame (`-10f` / `-1f` / `+1f` / `+10f`).
+  - **2+ Videos → Merge Mode**: Concatenates clips via FFmpeg's `concat` demuxer without re-encoding, preserving original quality at disk I/O speed.
+- **Dual-Volume File Browser & Custom Extensions**: Supports internal shared storage and external SD cards with separate memory & quick-jump recent history (last 3 folders) for source videos and target directory, cached thumbnails, and customizable video file extensions in Settings.
+- **Deep Stream Diagnostics & Compatibility Check**: Inspects resolution, duration, FPS, size, codec/profile, pixel format, timebase, bitrate, audio sample rate, and channel layout via FFprobe, warning before merging if any parameter risks timeline or playback issues.
+- **Customizable UI & Android 13+ Themed Icon**: Material 3 **System / Light / Dark** themes, customizable progress bar styles (`Sweep` / `Line` / `Dual`) and accent colors (default Dodger Blue) with live Settings preview, compact floating toast notifications, and a pixel-matched **Monochrome adaptive icon**.
 
 ### Project Structure
 ```text
 video_merger/
 ├── lib/
-│   ├── main.dart              # App entry & Material 3 theme management
-│   ├── merge_page.dart        # Main UI: output config, video queue, progress & console
-│   ├── file_tree_picker.dart  # Dual-volume file/folder picker with path memory & thumb cache
-│   ├── settings_page.dart     # Settings: Theme selector & About
-│   └── video_service.dart     # FFmpeg/FFprobe wrapper, metadata & stream compatibility check
+│   ├── main.dart              # App entry & Material 3 theme/preference state
+│   ├── merge_page.dart        # Main workspace: Waiting / Trim / Merge modes & console
+│   ├── trim_panel.dart        # Coarse time + Start keyframe + End frame trim editor
+│   ├── file_tree_picker.dart  # Dual-volume browser with separate memory & 3-folder history
+│   ├── settings_page.dart     # Theme, progress style/color preview, custom extensions & About
+│   ├── progress_style.dart    # Smooth animated card/global progress widgets & color presets
+│   ├── floating_toast.dart    # Compact Overlay pill notifications
+│   └── video_service.dart     # Serialized FFmpeg/FFprobe engine, keyframes & compatibility
 ├── assets/icon/
 │   ├── icon.png               # Primary app icon
 │   └── icon_monochrome.png    # Android 13+ monochrome icon source
-├── android/                   # Android native config & multi-DPI monochrome icons
-└── test/widget_test.dart      # Widget tests
+├── android/                   # Android native config (com.yin.videotoolkit) & DPI icons
+└── test/widget_test.dart      # Unit & widget tests
 ```
 
 ### Build & Run
@@ -59,18 +63,19 @@ flutter build apk --release --target-platform android-arm64
 - [`ffmpeg_kit_flutter_new_min`](https://pub.dev/packages/ffmpeg_kit_flutter_new_min) — Minimal FFmpeg / FFprobe engine
 - [`permission_handler`](https://pub.dev/packages/permission_handler) — Android storage permissions
 - [`path_provider`](https://pub.dev/packages/path_provider) — Cache & external storage paths
-- [`shared_preferences`](https://pub.dev/packages/shared_preferences) — Theme & last-directory persistence
+- [`shared_preferences`](https://pub.dev/packages/shared_preferences) — Settings & folder history persistence
 
 ---
 
 ## 日本語
 
 ### 主な機能
-- **無劣化ダイレクト結合（`-c copy`）**：FFmpeg の `concat` デマルチプレクサを使用し、再エンコードなしで複数の動画を高速・無劣化で結合します。
-- **内部ストレージ・SD カード対応ファイルブラウザ**：前回のフォルダ位置を記憶し、パンくず表示、一括選択、サムネイルキャッシュに対応（`.mp4` / `.mkv` / `.mov` / `.avi` / `.ts` / `.webm`）。
-- **ストリーム診断＆互換性チェック**：FFprobe で解像度・再生時間・FPS・サイズ・映像/音声コーデック・ビットレート・総フレーム数を自動解析し、結合前にコーデックや解像度の不一致を警告します。
-- **キュー管理＆リアルタイムログ**：ドラッグ＆ドロップでの並び替え、出力先フォルダ・ファイル名の変更、フレーム単位の進捗表示、強制停止、折りたたみ・コピー可能な FFmpeg コンソールログを搭載。
-- **Material 3 ＆ Android 13+ モノクロアイコン**：**システム連動 / ライト / ダーク**テーマ（デフォルトはシステム連動）に対応し、Material You 向けの **Monochrome テーマアイコン** を備えています。
+- **無劣化ダイレクトトリム＆結合（`-c copy`）**：
+  - **1 本選択 → Trim モード**：時間軸スライダーによる粗調整と開始/終了フレームのリアルタイムプレビュー。開始点は**キーフレーム吸着**（`Prev KF` / `Snap KF` / `Next KF` + `Auto-Snap`）、終了点は**フレーム単位微調整**（`-10f` / `-1f` / `+1f` / `+10f`）に対応。
+  - **複数選択 → Merge モード**：FFmpeg の `concat` により再エンコードなしで高速・無劣化結合。
+- **内部ストレージ・SD カード対応＆拡張子カスタマイズ**：元動画フォルダと保存先フォルダを個別に記憶し、直近 3 件の履歴フォルダへワンタップ移動可能。設定から任意の拡張子を動画として追加できます。
+- **詳細ストリーム診断＆互換性チェック**：解像度・再生時間・FPS・コーデック/プロファイル・ピクセルフォーマット・Timebase・音声サンプルレート/チャンネルを解析し、タイムライン異常の原因となる不一致を事前に警告します。
+- **Material 3 ＆ 進捗バーカスタマイズ**：システム連動/ライト/ダークテーマ、進捗バースタイル（`Sweep` / `Line` / `Dual`）とメインカラー選択（プレビュー付き）、フローティング通知、Android 13+ モノクロテーマアイコンに対応。
 
 ### 開発・ビルド手順
 ```bash
@@ -90,11 +95,12 @@ flutter build apk --release --target-platform android-arm64
 ## 中文
 
 ### 功能特性
-- **无损极速合并（`-c copy`）**：基于 FFmpeg `concat` 分离器直接拼接音视频流，**无需重编码**，完整保留原始画质与音质，速度接近磁盘读写上限。
-- **双存储多选文件浏览器**：支持内部共享存储与外置 SD 卡浏览，自动记忆上次访问目录，支持全选/取消全选、路径面包屑导航与视频缩略图缓存（`.mp4` / `.mkv` / `.mov` / `.avi` / `.ts` / `.webm`）。
-- **流信息诊断与兼容性检测**：通过 FFprobe 自动解析分辨率、时长、FPS、体积、音视频编码、码率与总帧数，并在合并前自动提示编码或分辨率不匹配警告。
-- **可视化队列与实时控制台**：支持拖拽排序、自定义输出目录与输出文件名、实时帧进度条、随时强停，以及可折叠/一键复制的 FFmpeg 日志面板。
-- **Material 3 与 Android 13+ 单色图标**：支持 **System（默认）/ Light / Dark** 三种主题模式并持久化保存，完整适配 Material You **Monochrome 单色主题图标**。
+- **无损直通裁剪与合并（`-c copy`）**：
+  - **选择 1 个视频 → `Trim` 模式**：时间轴粗选 + 起止帧实时预览；**起点按关键帧吸附**（`Prev KF` / `Snap KF` / `Next KF` + `Auto-Snap`），**终点按帧微调**（`-10f` / `-1f` / `+1f` / `+10f`）。
+  - **选择 2 个及以上视频 → `Merge` 模式**：基于 FFmpeg `concat` 无损拼接音视频流，无需重编码，速度接近磁盘读写上限。
+- **双存储文件浏览器与自定义扩展名**：支持内部存储与外置 SD 卡，原视频目录与目标输出目录独立记忆并支持最近 3 个历史目录一键跳转；支持在设置中添加自定义视频扩展名。
+- **深度流信息诊断与兼容性检测**：通过 FFprobe 解析分辨率、时长、FPS、编码与 Profile、像素格式、时间基（Timebase）、码率、音频采样率与声道布局，卡片直接展示并提前预警不匹配项。
+- **Material 3 界面与个性化定制**：支持跟随系统/浅色/深色主题、进度条样式（`Sweep` / `Line` / `Dual`）与主色调自定义（默认道奇蓝，设置页实时预览）、轻量悬浮提示以及 Android 13+ Monochrome 单色主题图标。
 
 ### 开发与构建
 ```bash
@@ -112,4 +118,4 @@ flutter build apk --release --target-platform android-arm64
 ---
 
 ## Repository
-[https://github.com/yingongsui/VideoMerger-Flutter](https://github.com/yingongsui/VideoMerger-Flutter)
+[https://github.com/yingongsui/VideoToolKit-Flutter](https://github.com/yingongsui/VideoToolKit-Flutter)

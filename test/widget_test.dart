@@ -47,16 +47,26 @@ void main() {
     expect(result.warnings, contains('Audio sample rate mismatch'));
   });
 
+  test('keyframe navigation helpers find prev, nearest, and next keyframes', () {
+    const kfs = [0.0, 2.5, 5.0, 10.0, 15.0];
+    expect(VideoService.findNearestKeyframe(kfs, 3.9), 5.0);
+    expect(VideoService.findNearestKeyframe(kfs, 3.1), 2.5);
+    expect(VideoService.findPrevKeyframe(kfs, 5.0), 2.5);
+    expect(VideoService.findNextKeyframe(kfs, 5.0), 10.0);
+    expect(VideoService.findPrevKeyframe(kfs, 0.0), isNull);
+    expect(VideoService.findNextKeyframe(kfs, 15.0), isNull);
+  });
+
   testWidgets(
     'MergePage renders empty queue and Settings supports Theme, Progress Style, Extensions & About',
     (WidgetTester tester) async {
       await tester.pumpWidget(const VideoMergerApp());
       await tester.pumpAndSettle();
 
-      expect(find.text('Direct-Stream Merger'), findsOneWidget);
+      expect(find.text('VideoToolKit'), findsOneWidget);
       expect(find.text('No Videos in Queue'), findsOneWidget);
       expect(find.text('Add Videos'), findsOneWidget);
-      expect(find.text('Merge'), findsOneWidget);
+      expect(find.text('Waiting'), findsOneWidget);
 
       // Open Settings from the top-right icon
       await tester.tap(find.byIcon(Icons.settings_outlined));
@@ -104,12 +114,12 @@ void main() {
       expect(allExts, containsAll(['.mp4', '.flv', '.m4v']));
 
       await tester.scrollUntilVisible(
-        find.text('https://github.com/yingongsui/VideoMerger-Flutter'),
+        find.text('https://github.com/yingongsui/VideoToolKit-Flutter'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       expect(find.text('ABOUT'), findsOneWidget);
-      expect(find.text('VideoMerger'), findsOneWidget);
+      expect(find.text('VideoToolKit'), findsOneWidget);
 
       // Let the floating toast auto-dismiss cleanly
       await tester.pump(const Duration(seconds: 3));
